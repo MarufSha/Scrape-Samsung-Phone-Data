@@ -1,4 +1,5 @@
 import re
+import sys
 import requests
 from bs4 import BeautifulSoup
 from sqlalchemy import inspect, text
@@ -7,23 +8,8 @@ from sqlalchemy.orm import Session
 from database.db import SessionLocal
 from database.models import Phone, PhoneVariant
 
-PHONE_URLS = [
-    "https://www.gsmarena.com/samsung_galaxy_s26_ultra_5g-14320.php",
-    "https://www.gsmarena.com/samsung_galaxy_s26+_5g-14457.php",
-    "https://www.gsmarena.com/samsung_galaxy_s26_5g-14456.php",
-    "https://www.gsmarena.com/samsung_galaxy_s25_fe_5g-14042.php",
-    "https://www.gsmarena.com/samsung_galaxy_s25_edge-13506.php",
-    "https://www.gsmarena.com/samsung_galaxy_z_trifold_5g-14292.php",
-    "https://www.gsmarena.com/samsung_galaxy_z_fold7-13826.php",
-    "https://www.gsmarena.com/samsung_galaxy_z_flip7-13712.php",
-    "https://www.gsmarena.com/samsung_galaxy_z_flip7_fe_5g-13844.php",
-    "https://www.gsmarena.com/samsung_galaxy_s25_ultra-13322.php",
-    "https://www.gsmarena.com/samsung_galaxy_z_fold6-13147.php",
-    "https://www.gsmarena.com/samsung_galaxy_z_flip6-13192.php",
-    "https://www.gsmarena.com/samsung_galaxy_s24-12773.php",
-    "https://www.gsmarena.com/samsung_galaxy_z_flip5-12252.php",
-    "https://www.gsmarena.com/samsung_galaxy_a36-13497.php",
-]
+LISTING_BASE_URL = "https://www.gsmarena.com/samsung-phones-9.php"
+GSMARENA_BASE_URL = "https://www.gsmarena.com"
 
 HEADERS = {
     "User-Agent": (
@@ -32,6 +18,44 @@ HEADERS = {
         "Chrome/124.0.0.0 Safari/537.36"
     )
 }
+
+
+def fetch_phone_urls_from_listing(limit: int) -> list[str]:
+    urls: list[str] = []
+    page = 1
+
+    while len(urls) < limit:
+        if page == 1:
+            listing_url = LISTING_BASE_URL
+        else:
+            listing_url = f"{GSMARENA_BASE_URL}/samsung-phones-9-0-p{page}.php"
+
+        print(f"Fetching listing page {page}: {listing_url}")
+        soup = fetch_page(listing_url)
+
+        makers_div = soup.select_one("div.makers")
+        if not makers_div:
+            break
+
+        links = makers_div.select("li > a[href]")
+        if not links:
+            break
+
+        for link in links:
+            if len(urls) >= limit:
+                break
+            href = link["href"]
+            full_url = f"{GSMARENA_BASE_URL}/{href}"
+            urls.append(full_url)
+
+        # Check if there's a next page
+        next_link = soup.select_one("a.pages-next")
+        if not next_link:
+            break
+
+        page += 1
+
+    return urls
 
 
 def ensure_schema_columns(db: Session) -> None:
@@ -139,6 +163,9 @@ def normalize_variant_key(storage: str, ram: str) -> tuple[str, str]:
 def parse_variant_price_rows(soup: BeautifulSoup) -> dict[tuple[str, str], str]:
     variant_prices: dict[tuple[str, str], str] = {}
 
+    # Price widgets are not consistently wrapped in `table.prices` across pages,
+    # so we look for any row that has RAM/storage in the first cell and one or
+    # more outgoing store links in the other cells.
     for row in soup.select("tr"):
         cells = row.find_all("td")
         if len(cells) < 2:
@@ -279,7 +306,7 @@ def save_phone_to_db(db: Session, phone_data: dict) -> None:
     print(f"Saved: {phone_data['name']}")
 
 
-def main():
+def main(limit: int = 15):
     db = SessionLocal()
 
     try:
@@ -289,7 +316,10 @@ def main():
         db.commit()
         print("Wiped existing phone dataset.")
 
-        for url in PHONE_URLS:
+        phone_urls = fetch_phone_urls_from_listing(limit)
+        print(f"Found {len(phone_urls)} phone URLs to scrape.")
+
+        for url in phone_urls:
             try:
                 phone_data = extract_phone_data(url)
                 save_phone_to_db(db, phone_data)
@@ -302,4 +332,5 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    limit = int(sys.argv[1]) if len(sys.argv) > 1 else 15
+    main(limit)
