@@ -159,6 +159,7 @@ Then:
 from database.db import Base, engine
 Base.metadata.create_all(bind=engine)
 
+python init_db.py
 --------------------------------------------------
 
 6. Run scraper
